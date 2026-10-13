@@ -265,7 +265,7 @@ scheduler = None
 
 # ==================== 백그라운드 자동화 ====================
 
-def sync_weather_routine():
+async def sync_weather_routine():
     """
     CLAUDE.md 2번 룰 준수: 기상청 API 데이터를 자동 수집하여 weather_logs.db에 적재
 
@@ -529,8 +529,9 @@ async def startup_event():
     logger.info("🚀 myAISky 서버 시작")
     init_db()
     start_scheduler()
-    # 초기 데이터 수집
-    await sync_weather_endpoint()
+    # 초기 데이터 수집 (백그라운드에서 비동기 실행)
+    import asyncio
+    asyncio.create_task(sync_weather_routine())  # ✅ 정의되어 있는 함수로 변경
 
 
 @app.on_event("shutdown")
