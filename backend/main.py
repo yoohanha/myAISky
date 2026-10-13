@@ -15,6 +15,9 @@ from pathlib import Path
 import json
 import xml.etree.ElementTree as ET
 import urllib.parse
+import logging
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 # ==================== 설정 ====================
 app = FastAPI(title="myAISky Backend", version="2.0.0")
@@ -249,6 +252,155 @@ def get_weather_data():
 weather_cache = None
 cache_timestamp = None
 
+# ==================== 로깅 설정 ====================
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# 백그라운드 스케줄러
+scheduler = None
+
+
+# ==================== 백그라운드 자동화 ====================
+
+def sync_weather_routine():
+    """
+    CLAUDE.md 2번 룰 준수: 기상청 API 데이터를 자동 수집하여 weather_logs.db에 적재
+
+    반환 JSON 스키마:
+    {
+        "sync_id": "UUID",
+        "timestamp": "ISO 8601",
+        "status": "SUCCESS|FAILED|PARTIAL",
+        "data": {
+            "source": "Korea Meteorological Administration (KMA)",
+            "temperature": 18.5,
+            "humidity": 65,
+            "wind_speed": 3.2,
+            "condition": "맑음",
+            "location": "Seoul, South Korea"
+        },
+        "db_result": {
+            "inserted": true,
+            "record_id": 1,
+            "total_records": 25
+        },
+        "message": "기상청 데이터 동기화 완료"
+    }
+    """
+    import uuid
+
+    sync_id = str(uuid.uuid4())[:8]
+
+    try:
+        logger.info(f"[{sync_id}] 기상청 데이터 자동 수집 시작")
+
+        # 1. 기상청 API 호출
+        weather_data = get_weather_data()
+
+        if not weather_data:
+            raise Exception("기상청 API 응답 없음")
+
+        logger.info(f"[{sync_id}] 기상청 API 조회 완료: 온도={weather_data.get('temperature')}°C")
+
+        # 2. DB 저장
+        db_result = {
+            "inserted": False,
+            "record_id": None,
+            "total_records": get_weather_logs_count()
+        }
+
+        if weather_data["status"] == "OK":
+            # DB에 안전하게 저장 (CLAUDE.md 2.3절)
+            save_success = insert_weather_log(
+                temperature=weather_data["temperature"],
+                humidity=weather_data["humidity"],
+                wind_speed=weather_data["wind_speed"],
+                apparent_temperature=weather_data["apparent_temperature"],
+                condition=weather_data.get("condition", "알 수 없음"),
+                location=weather_data["location"]
+            )
+
+            if save_success:
+                db_result["inserted"] = True
+                db_result["total_records"] = get_weather_logs_count()
+                logger.info(f"[{sync_id}] DB 저장 완료: 총 {db_result['total_records']}개 기록")
+            else:
+                logger.warning(f"[{sync_id}] DB 저장 실패")
+                raise Exception("DB 저장 실패")
+
+        # 3. 표준 JSON 반환 (CLAUDE.md 3.2절)
+        sync_result = {
+            "sync_id": sync_id,
+            "timestamp": datetime.now().isoformat(),
+            "status": "SUCCESS",
+            "data": {
+                "source": weather_data.get("source", "Korea Meteorological Administration (KMA)"),
+                "temperature": weather_data.get("temperature"),
+                "humidity": weather_data.get("humidity"),
+                "wind_speed": weather_data.get("wind_speed"),
+                "condition": weather_data.get("condition"),
+                "location": weather_data.get("location", "Seoul, South Korea")
+            },
+            "db_result": db_result,
+            "message": "기상청 데이터 동기화 완료"
+        }
+
+        logger.info(f"[{sync_id}] 동기화 완료: {json.dumps(sync_result, ensure_ascii=False, indent=2)}")
+        return sync_result
+
+    except Exception as e:
+        logger.error(f"[{sync_id}] 동기화 실패: {str(e)}", exc_info=True)
+
+        return {
+            "sync_id": sync_id,
+            "timestamp": datetime.now().isoformat(),
+            "status": "FAILED",
+            "error": str(e),
+            "db_result": {
+                "inserted": False,
+                "total_records": get_weather_logs_count()
+            },
+            "message": "기상청 데이터 동기화 실패"
+        }
+
+
+def start_scheduler():
+    """백그라운드 스케줄러 시작"""
+    global scheduler
+
+    try:
+        scheduler = BackgroundScheduler()
+
+        # 10분마다 sync_weather_routine 실행 (CLAUDE.md 4.2절)
+        scheduler.add_job(
+            sync_weather_routine,
+            IntervalTrigger(minutes=10),
+            id='sync_weather_job',
+            name='기상청 데이터 동기화',
+            replace_existing=True
+        )
+
+        scheduler.start()
+        logger.info("✅ 백그라운드 스케줄러 시작: 10분마다 기상청 데이터 자동 수집")
+
+    except Exception as e:
+        logger.error(f"스케줄러 시작 실패: {str(e)}", exc_info=True)
+
+
+def stop_scheduler():
+    """백그라운드 스케줄러 종료"""
+    global scheduler
+
+    try:
+        if scheduler and scheduler.running:
+            scheduler.shutdown()
+            logger.info("✅ 백그라운드 스케줄러 종료")
+    except Exception as e:
+        logger.error(f"스케줄러 종료 실패: {str(e)}", exc_info=True)
+
 
 # ==================== API 엔드포인트 ====================
 
@@ -336,7 +488,59 @@ async def health_check():
     }
 
 
-# ==================== 서버 시작 ====================
+@app.post("/api/sync")
+async def sync_weather_endpoint():
+    """
+    기상청 데이터 수동 동기화 엔드포인트
+
+    응답: 표준 JSON 스키마 (CLAUDE.md 3.2절)
+    """
+    result = sync_weather_routine()
+
+    if result["status"] == "SUCCESS":
+        return result
+    else:
+        raise HTTPException(status_code=500, detail=result)
+
+
+@app.get("/api/sync/status")
+async def sync_status():
+    """스케줄러 상태 확인"""
+    global scheduler
+
+    running = scheduler.running if scheduler else False
+
+    return {
+        "scheduler_running": running,
+        "next_sync": (
+            scheduler.get_job('sync_weather_job').next_run_time.isoformat()
+            if scheduler and scheduler.get_job('sync_weather_job')
+            else None
+        ),
+        "interval_minutes": 10
+    }
+
+
+# ==================== 서버 시작/종료 ====================
+
+@app.on_event("startup")
+async def startup_event():
+    """서버 시작 시 초기화"""
+    logger.info("🚀 myAISky 서버 시작")
+    init_db()
+    start_scheduler()
+    # 초기 데이터 수집
+    await sync_weather_endpoint()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """서버 종료 시 정리"""
+    logger.info("🛑 myAISky 서버 종료")
+    stop_scheduler()
+
+
+# ==================== 메인 실행 ====================
 
 if __name__ == "__main__":
     # 데이터베이스 초기화
