@@ -10,9 +10,11 @@ from fastapi.responses import HTMLResponse
 from starlette.requests import Request
 import requests
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import json
+import xml.etree.ElementTree as ET
+import urllib.parse
 
 # ==================== 설정 ====================
 app = FastAPI(title="myAISky Backend", version="2.0.0")
@@ -120,8 +122,115 @@ def get_weather_logs_count():
 
 # ==================== 기상 API ====================
 
+# 기상청 API 설정
+KMA_API_KEY = "c8537ba5d54f1d34c5829f2626eab25672932c12bfbe77ed1ac0eebf8182ed1"
+KMA_API_URL = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtNcst"
+SEOUL_NX = 55  # 서울 격자 X 좌표
+SEOUL_NY = 127  # 서울 격자 Y 좌표
+
+# 강수형태 코드 변환
+PTY_CODES = {
+    "0": "맑음",
+    "1": "비",
+    "2": "비/눈",
+    "3": "눈",
+    "4": "소나기",
+    "5": "빗소나기",
+    "6": "눈소나기",
+    "7": "폭우"
+}
+
+
+def get_kma_weather_data():
+    """기상청 초단기실황조회 API에서 실시간 날씨 데이터 조회"""
+    try:
+        # 현재 시간 기준 base_date, base_time 계산
+        now = datetime.now()
+
+        # API는 가장 최근의 발표 시간 데이터를 제공
+        # 시간이 정각 45분 이전이면 이전 시간 데이터 사용
+        if now.minute < 45:
+            now = now - timedelta(hours=1)
+
+        base_date = now.strftime("%Y%m%d")
+        base_time = now.strftime("%H") + "00"
+
+        params = {
+            "serviceKey": KMA_API_KEY,
+            "pageNo": "1",
+            "numOfRows": "60",
+            "dataType": "JSON",
+            "base_date": base_date,
+            "base_time": base_time,
+            "nx": str(SEOUL_NX),
+            "ny": str(SEOUL_NY)
+        }
+
+        response = requests.get(KMA_API_URL, params=params, timeout=5)
+        response.raise_for_status()
+
+        data = response.json()
+
+        # API 응답 검증
+        if data.get("response", {}).get("header", {}).get("resultCode") != "00":
+            raise Exception(f"API 오류: {data.get('response', {}).get('header', {}).get('resultMsg')}")
+
+        # 데이터 추출
+        items = data.get("response", {}).get("body", {}).get("items", {}).get("item", [])
+
+        if not items:
+            raise Exception("날씨 데이터 없음")
+
+        # 카테고리별 데이터 정렬
+        weather_data = {}
+        for item in items:
+            category = item.get("category")
+            value = item.get("obsrValue")
+
+            if category == "T1H":  # 기온
+                weather_data["temperature"] = float(value)
+            elif category == "REH":  # 습도
+                weather_data["humidity"] = int(float(value))
+            elif category == "WSD":  # 풍속
+                weather_data["wind_speed"] = float(value)
+            elif category == "PTY":  # 강수형태
+                weather_data["condition"] = PTY_CODES.get(value, f"기타({value})")
+
+        # 필수 데이터 확인
+        if "temperature" not in weather_data:
+            weather_data["temperature"] = 0
+        if "humidity" not in weather_data:
+            weather_data["humidity"] = 0
+        if "wind_speed" not in weather_data:
+            weather_data["wind_speed"] = 0
+        if "condition" not in weather_data:
+            weather_data["condition"] = "데이터 없음"
+
+        return {
+            "location": "Seoul, South Korea",
+            "timestamp": f"{base_date[:4]}-{base_date[4:6]}-{base_date[6:8]} {base_time[:2]}:{base_time[2:]}",
+            "temperature": weather_data.get("temperature", 0),
+            "humidity": weather_data.get("humidity", 0),
+            "wind_speed": weather_data.get("wind_speed", 0),
+            "apparent_temperature": weather_data.get("temperature", 0),  # 기상청에서 체감온도 직접 제공 안함
+            "condition": weather_data.get("condition", "알 수 없음"),
+            "source": "Korea Meteorological Administration (KMA)",
+            "status": "OK"
+        }
+
+    except Exception as e:
+        print(f"기상청 API 오류: {e}")
+        return None
+
+
 def get_weather_data():
-    """Open-Meteo API에서 기상 데이터 조회"""
+    """기상청 API를 우선 사용하고, 실패시 Open-Meteo API로 폴백"""
+    # 1. 기상청 API 시도 (우선 순위)
+    kma_data = get_kma_weather_data()
+    if kma_data:
+        return kma_data
+
+    # 2. Open-Meteo API로 폴백
     try:
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
@@ -144,6 +253,7 @@ def get_weather_data():
             "humidity": current.get("relative_humidity_2m", 0),
             "wind_speed": current.get("wind_speed_10m", 0),
             "weather_code": current.get("weather_code", 0),
+            "source": "Open-Meteo",
             "status": "OK"
         }
     except requests.exceptions.RequestException as e:
@@ -154,6 +264,8 @@ def get_weather_data():
             "apparent_temperature": 17.2,
             "humidity": 65,
             "wind_speed": 3.5,
+            "condition": "알 수 없음",
+            "source": "Cache",
             "status": "FALLBACK_MODE",
             "message": "실시간 데이터 로드 불가 - 캐시 데이터 표시"
         }

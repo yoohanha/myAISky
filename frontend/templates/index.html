@@ -403,8 +403,16 @@
                     <span class="value" id="weather-wind">로드 중...</span>
                 </div>
                 <div class="weather-item">
+                    <span class="label">날씨</span>
+                    <span class="value" id="weather-condition">로드 중...</span>
+                </div>
+                <div class="weather-item">
                     <span class="label">마지막 업데이트</span>
                     <span class="value" id="last-update" style="font-size: 0.9rem;">--:--</span>
+                </div>
+                <div class="weather-item">
+                    <span class="label">데이터 소스</span>
+                    <span class="value" id="data-source" style="font-size: 0.85rem; color: #999;">--</span>
                 </div>
             </div>
 
@@ -465,13 +473,23 @@
                     document.getElementById('weather-humidity').textContent = data.humidity + '%';
                     document.getElementById('weather-wind').textContent = data.wind_speed.toFixed(1) + ' km/h';
 
+                    // 날씨 상태 표시
+                    const condition = data.condition || '알 수 없음';
+                    document.getElementById('weather-condition').textContent = condition;
+
                     const now = new Date();
                     document.getElementById('last-update').textContent =
                         now.toLocaleTimeString('ko-KR', { hour12: false });
 
-                    addLog('🌡️ 기상 데이터 동기화 완료 - ' + data.location);
+                    // 데이터 소스 표시
+                    const source = data.source || 'Unknown';
+                    document.getElementById('data-source').textContent = source;
+
+                    // 로그 메시지
+                    const sourceLabel = source === 'Korea Meteorological Administration (KMA)' ? '🇰🇷 기상청 KMA' : source;
+                    addLog('🌡️ 기상 데이터 동기화 완료 - ' + data.location + ' (' + sourceLabel + ')');
                     if (data.status === 'FALLBACK_MODE') {
-                        addLog('⚠️ API 연결 오류 - 캐시 데이터 사용 중');
+                        addLog('⚠️ 기상청 API 연결 오류 - 폴백 데이터 사용 중');
                     }
                 }
             } catch (error) {
