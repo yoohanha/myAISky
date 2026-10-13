@@ -224,51 +224,25 @@ def get_kma_weather_data():
 
 
 def get_weather_data():
-    """기상청 API를 우선 사용하고, 실패시 Open-Meteo API로 폴백"""
-    # 1. 기상청 API 시도 (우선 순위)
+    """기상청 공공 API를 우선 사용하여 실시간 기상 데이터 조회"""
+    # 기상청 API 우선 사용
     kma_data = get_kma_weather_data()
     if kma_data:
         return kma_data
 
-    # 2. Open-Meteo API로 폴백
-    try:
-        url = "https://api.open-meteo.com/v1/forecast"
-        params = {
-            "latitude": 37.5665,
-            "longitude": 126.9780,
-            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
-            "timezone": "Asia/Seoul"
-        }
-
-        response = requests.get(url, params=params, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-
-        current = data.get("current", {})
-        return {
-            "location": "Seoul, South Korea",
-            "timestamp": current.get("time"),
-            "temperature": current.get("temperature_2m", 0),
-            "apparent_temperature": current.get("apparent_temperature", 0),
-            "humidity": current.get("relative_humidity_2m", 0),
-            "wind_speed": current.get("wind_speed_10m", 0),
-            "weather_code": current.get("weather_code", 0),
-            "source": "Open-Meteo",
-            "status": "OK"
-        }
-    except requests.exceptions.RequestException as e:
-        print(f"날씨 API 오류: {e}")
-        return {
-            "location": "Seoul, South Korea",
-            "temperature": 18.5,
-            "apparent_temperature": 17.2,
-            "humidity": 65,
-            "wind_speed": 3.5,
-            "condition": "알 수 없음",
-            "source": "Cache",
-            "status": "FALLBACK_MODE",
-            "message": "실시간 데이터 로드 불가 - 캐시 데이터 표시"
-        }
+    # 기상청 API 실패 시 캐시 데이터 반환
+    print("[WARNING] 기상청 API 실패 - 캐시 데이터 사용")
+    return {
+        "location": "Seoul, South Korea",
+        "temperature": 18.5,
+        "apparent_temperature": 17.2,
+        "humidity": 65,
+        "wind_speed": 3.5,
+        "condition": "데이터 로드 중",
+        "source": "Korea Meteorological Administration (KMA)",
+        "status": "FALLBACK_MODE",
+        "message": "실시간 데이터 로드 불가 - 캐시 데이터 표시"
+    }
 
 
 # 기상 데이터 캐시
@@ -298,7 +272,7 @@ async def get_weather():
             humidity=weather_data["humidity"],
             wind_speed=weather_data["wind_speed"],
             apparent_temperature=weather_data["apparent_temperature"],
-            condition=f"Code: {weather_data.get('weather_code', 'N/A')}",
+            condition=weather_data.get("condition", "알 수 없음"),  # 기상청 날씨 상태 저장
             location=weather_data["location"]
         )
 

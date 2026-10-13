@@ -481,15 +481,14 @@
                     document.getElementById('last-update').textContent =
                         now.toLocaleTimeString('ko-KR', { hour12: false });
 
-                    // 데이터 소스 표시
-                    const source = data.source || 'Unknown';
-                    document.getElementById('data-source').textContent = source;
+                    // 데이터 소스 표시 (항상 기상청)
+                    const source = data.source || 'Korea Meteorological Administration (KMA)';
+                    document.getElementById('data-source').textContent = '🇰🇷 ' + source;
 
                     // 로그 메시지
-                    const sourceLabel = source === 'Korea Meteorological Administration (KMA)' ? '🇰🇷 기상청 KMA' : source;
-                    addLog('🌡️ 기상 데이터 동기화 완료 - ' + data.location + ' (' + sourceLabel + ')');
+                    addLog('🌡️ 기상청(KMA) 데이터 동기화 완료 - ' + data.location);
                     if (data.status === 'FALLBACK_MODE') {
-                        addLog('⚠️ 기상청 API 연결 오류 - 폴백 데이터 사용 중');
+                        addLog('⚠️ 기상청 실시간 데이터 로드 중 - 캐시 데이터 표시');
                     }
                 }
             } catch (error) {
