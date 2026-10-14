@@ -10,12 +10,14 @@ from fastapi.responses import HTMLResponse
 from starlette.requests import Request
 import requests
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
 import xml.etree.ElementTree as ET
 import urllib.parse
 import logging
+import os
+from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -29,6 +31,9 @@ STATIC_DIR = FRONTEND_DIR / "static"
 TEMPLATES_DIR = FRONTEND_DIR / "templates"
 DB_DIR = Path(__file__).parent / "database"
 DB_PATH = DB_DIR / "weather_logs.db"
+
+# .env 파일 로드 (프로젝트 루트)
+load_dotenv(BASE_DIR / ".env")
 
 # 디렉토리 생성
 DB_DIR.mkdir(exist_ok=True)
@@ -126,7 +131,10 @@ def get_weather_logs_count():
 # ==================== 기상 API ====================
 
 # 기상청 API 설정
-KMA_API_KEY = "c8537ba5d54f1d34c5829f2626eab25672932c12bfbe77ed1ac0eebf8182ed1"
+# 공공데이터포털 일반 인증키(Decoding)를 .env 의 KMA_API_KEY 에 설정
+KMA_API_KEY = os.getenv("KMA_API_KEY", "")
+if not KMA_API_KEY:
+    print("[WARNING] KMA_API_KEY 미설정 - .env 파일에 인증키를 설정하세요 (캐시 데이터로 동작)")
 KMA_API_URL = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtNcst"
 SEOUL_NX = 55  # 서울 격자 X 좌표
 SEOUL_NY = 127  # 서울 격자 Y 좌표
@@ -147,8 +155,8 @@ PTY_CODES = {
 def get_kma_weather_data():
     """기상청 초단기실황조회 API에서 실시간 날씨 데이터 조회"""
     try:
-        # 현재 시간 기준 base_date, base_time 계산
-        now = datetime.now()
+        # 현재 시간 기준 base_date, base_time 계산 (기상청은 한국 시간 기준)
+        now = datetime.now(timezone(timedelta(hours=9)))
 
         # API는 가장 최근의 발표 시간 데이터를 제공
         # 시간이 정각 45분 이전이면 이전 시간 데이터 사용
@@ -265,7 +273,7 @@ scheduler = None
 
 # ==================== 백그라운드 자동화 ====================
 
-async def sync_weather_routine():
+def sync_weather_routine():
     """
     CLAUDE.md 2번 룰 준수: 기상청 API 데이터를 자동 수집하여 weather_logs.db에 적재
 
@@ -529,9 +537,8 @@ async def startup_event():
     logger.info("🚀 myAISky 서버 시작")
     init_db()
     start_scheduler()
-    # 초기 데이터 수집 (백그라운드에서 비동기 실행)
-    import asyncio
-    asyncio.create_task(sync_weather_routine())  # ✅ 정의되어 있는 함수로 변경
+    # 초기 데이터 수집 (sync_weather_routine은 동기 함수이므로 직접 호출)
+    sync_weather_routine()
 
 
 @app.on_event("shutdown")
